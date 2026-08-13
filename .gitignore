@@ -1,0 +1,21 @@
+# IDE
+.idea/
+.vscode/
+
+# Go build outputs
+*.exe
+*.test
+*.out
+
+# Local caches and temp files
+.gocache/
+.gotmp/
+tmp/
+temp/
+
+# Logs
+*.log
+
+# OS files
+Thumbs.db
+.DS_Store

@@ -1,0 +1,29 @@
+syntax = "proto3";
+
+package grpcpeer;
+
+option go_package = "distcache/grpcpeer;grpcpeer";
+
+message Request {
+  string group = 1;
+  string key = 2;
+}
+
+message Response {
+  bytes value = 1;
+}
+
+message Invalidation {
+  string group = 1;
+  string key = 2;
+}
+
+message Ack {
+  string group = 1;
+  string key = 2;
+}
+
+service GroupCache {
+  rpc Get(Request) returns (Response);
+  rpc Invalidate(stream Invalidation) returns (stream Ack);
+}

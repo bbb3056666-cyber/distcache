@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+package cachepb;
+
+option go_package = "distcache/pkg/cachepb;cachepb";
+
+message Request {
+  string group = 1;
+  string key = 2;
+}
+
+message Response {
+  bytes value = 1;
+}
