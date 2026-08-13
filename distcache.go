@@ -2,9 +2,9 @@
 package distcache
 
 import (
-	"distcache/core"
-	"distcache/grpcpeer"
 	"errors"
+	"github.com/bbb3056666-cyber/distcache/core"
+	"github.com/bbb3056666-cyber/distcache/grpcpeer"
 	"sync"
 )
 

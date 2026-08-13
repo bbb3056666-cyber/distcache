@@ -1,8 +1,8 @@
 package grpcpeer
 
 import (
-	"distcache/core"
 	"fmt"
+	"github.com/bbb3056666-cyber/distcache/core"
 	"log/slog"
 	"net"
 	"sync"

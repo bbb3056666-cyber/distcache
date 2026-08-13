@@ -1,8 +1,8 @@
 package grpcpeer
 
 import (
-	"distcache/core"
-	"distcache/pkg/consistenthash"
+	"github.com/bbb3056666-cyber/distcache/core"
+	"github.com/bbb3056666-cyber/distcache/pkg/consistenthash"
 	"sync"
 )
 

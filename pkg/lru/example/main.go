@@ -6,7 +6,7 @@ package main
 import (
 	"fmt"
 
-	"distcache/pkg/lru"
+	"github.com/bbb3056666-cyber/distcache/pkg/lru"
 )
 
 func main() {

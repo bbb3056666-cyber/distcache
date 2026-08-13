@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"distcache/pkg/singleflight"
+	"github.com/bbb3056666-cyber/distcache/pkg/singleflight"
 )
 
 func main() {

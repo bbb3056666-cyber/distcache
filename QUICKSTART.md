@@ -97,7 +97,7 @@ import (
 	"log"
 	"time"
 
-	"distcache"
+	"github.com/bbb3056666-cyber/distcache"
 )
 
 func main() {

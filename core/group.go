@@ -3,15 +3,15 @@ package core
 
 import (
 	"context"
-	"distcache/pkg/bloom"
 	"errors"
+	"github.com/bbb3056666-cyber/distcache/pkg/bloom"
 	"log/slog"
 	"math/rand/v2"
 	"sync"
 	"time"
 
-	"distcache/pkg/cache"
-	"distcache/pkg/singleflight"
+	"github.com/bbb3056666-cyber/distcache/pkg/cache"
+	"github.com/bbb3056666-cyber/distcache/pkg/singleflight"
 )
 
 const (

@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"distcache/pkg/cache"
+	"github.com/bbb3056666-cyber/distcache/pkg/cache"
 )
 
 func main() {

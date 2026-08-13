@@ -7,8 +7,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"distcache/core"
-	pb "distcache/pkg/cachepb"
+	"github.com/bbb3056666-cyber/distcache/core"
+	pb "github.com/bbb3056666-cyber/distcache/pkg/cachepb"
 
 	"google.golang.org/protobuf/proto"
 )

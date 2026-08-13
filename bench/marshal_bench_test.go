@@ -12,7 +12,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	pb "distcache/pkg/cachepb"
+	pb "github.com/bbb3056666-cyber/distcache/pkg/cachepb"
 
 	"google.golang.org/protobuf/proto"
 )

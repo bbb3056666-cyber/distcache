@@ -2,7 +2,7 @@ package httppeer
 
 import (
 	"context"
-	"distcache/core"
+	"github.com/bbb3056666-cyber/distcache/core"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,8 +10,8 @@ import (
 	"sync"
 	"testing"
 
-	pb "distcache/pkg/cachepb"
-	"distcache/pkg/consistenthash"
+	pb "github.com/bbb3056666-cyber/distcache/pkg/cachepb"
+	"github.com/bbb3056666-cyber/distcache/pkg/consistenthash"
 
 	"google.golang.org/protobuf/proto"
 )

@@ -2,8 +2,8 @@ package grpcpeer
 
 import (
 	"context"
-	"distcache/core"
 	"errors"
+	"github.com/bbb3056666-cyber/distcache/core"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"

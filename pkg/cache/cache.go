@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"distcache/pkg/lru"
+	"github.com/bbb3056666-cyber/distcache/pkg/lru"
 )
 
 // Item 包装缓存值和过期时间。

@@ -3,9 +3,9 @@ package httppeer
 
 import (
 	"context"
-	"distcache/core"
 	"errors"
 	"fmt"
+	"github.com/bbb3056666-cyber/distcache/core"
 	"io"
 	"log/slog"
 	"net/http"
@@ -14,8 +14,8 @@ import (
 	"sync"
 	"time"
 
-	pb "distcache/pkg/cachepb"
-	"distcache/pkg/consistenthash"
+	pb "github.com/bbb3056666-cyber/distcache/pkg/cachepb"
+	"github.com/bbb3056666-cyber/distcache/pkg/consistenthash"
 
 	"google.golang.org/protobuf/proto"
 )

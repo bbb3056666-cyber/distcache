@@ -15,7 +15,7 @@ import (
 	"google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/status"
 
-	"distcache/core"
+	"github.com/bbb3056666-cyber/distcache/core"
 )
 
 // Server 管理本节点对外提供的 gRPC 服务和健康状态。

@@ -6,7 +6,7 @@ package main
 import (
 	"fmt"
 
-	"distcache/pkg/consistenthash"
+	"github.com/bbb3056666-cyber/distcache/pkg/consistenthash"
 )
 
 func main() {

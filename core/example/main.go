@@ -22,15 +22,15 @@ package main
 
 import (
 	"context"
-	"distcache/httppeer"
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/bbb3056666-cyber/distcache/httppeer"
 	"log"
 	"net/http"
 	"strings"
 
-	"distcache/core"
+	"github.com/bbb3056666-cyber/distcache/core"
 )
 
 // 模拟数据源（真实项目里这里是数据库/文件/RPC）。
