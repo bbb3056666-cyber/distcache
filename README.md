@@ -1,5 +1,9 @@
 # distcache
 
+[![CI](https://github.com/bbb3056666-cyber/distcache/actions/workflows/ci.yml/badge.svg)](https://github.com/bbb3056666-cyber/distcache/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+[![Go Version](https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go)](./go.mod)
+
 `distcache` 是一个使用 Go 实现的分布式缓存项目，包含本地缓存、缓存过期、防穿透、防击穿、一致性哈希路由、gRPC 远程读取、gRPC 双向流缓存失效广播、健康检查与节点摘除恢复等能力。
 
 项目重点是把一个缓存系统从单机能力扩展到分布式节点协作，并通过指标、日志和压测结果证明核心链路可运行。
@@ -46,6 +50,22 @@ path\to\your-app
 ```
 
 Demo 应用负责启动节点、注册缓存组、初始化日志，并提供 HTTP 页面/API 作为演示入口。
+
+## 安装
+
+在调用方 Go 项目中执行：
+
+```bash
+go get github.com/bbb3056666-cyber/distcache
+```
+
+然后导入根包：
+
+```go
+import "github.com/bbb3056666-cyber/distcache"
+```
+
+Go 会把模块版本记录到调用方的 `go.mod` 和 `go.sum`。根包封装了节点、缓存组、gRPC 路由、广播和健康检查，通常不需要调用方直接组装内部包。
 
 ## 架构概览
 
@@ -268,13 +288,23 @@ HealthChecker 周期探测 peer
 - gRPC 双向流缓存失效广播测试；
 - 节点下线摘除与恢复测试；
 - 节点优雅关闭与双向流收尾验证；
+- 三节点 Zipf 多 key 混合负载阶梯测试；
+- 14,000 QPS、5 分钟稳定性测试；
+- 持续负载下的节点摘除与恢复测试；
+- Ubuntu 与 Windows 双端 CPU 监控；
 - 全量 `go test -race ./...` 竞态检测。
 
 部分结果摘要：
 
 ```text
-单节点本地缓存命中：
-QPS 约 8.5 万，P95 约 2.8ms，P99 约 4.6ms。
+三节点混合负载稳定性：
+1,000 个 key 按 Zipf 分布访问，约 93% 正常读取、4% 不存在 key、3% 主动删除；
+14,000 QPS 持续 5 分钟，完成约 420 万次实际请求，业务请求零失败，
+P95 约 50.31ms，P99 约 63.07ms。
+
+环境边界：
+18,000 QPS 下实际发出的请求仍全部成功，但 VMware 虚拟网络与调度先出现抖动，
+因此本轮没有测得服务端的独立吞吐上限，也不宣称纯读缓存的绝对 QPS 上限。
 
 三节点远程读：
 100 并发请求同一个远程 key 时，只发生 1 次 gRPC 远程读取，
@@ -285,6 +315,10 @@ QPS 约 8.5 万，P95 约 2.8ms，P99 约 4.6ms。
 
 节点恢复：
 节点下线后 RingNodes 从 3 降为 2，恢复后重新回到 3。
+
+持续负载故障恢复：
+单一存活入口在 10,000 QPS 下持续 3 分钟，期间一个节点下线并恢复；
+完成 180 万次请求且零失败，PeerEjections=1、PeerRecoveries=1，广播无丢弃。
 
 优雅关闭：
 节点等待健康检查摘除后，出站广播流通过 CloseSend 收到 EOF，
@@ -322,19 +356,27 @@ go test -race ./... 通过，未检测到数据竞争。
 
 ## 已知限制
 
-- 当前测试主要在本地 Windows 单机环境完成，不代表多物理机生产性能。
+- 服务端运行于 Windows，k6 运行于同一物理机中的 Ubuntu VMware 虚拟机，不代表多物理机生产性能。
 - Demo 数据源是内存 map，并人为加入 `50ms` 延迟，不是真实数据库。
 - 当前一致性设计是“失效广播 + TTL 兜底”的最终一致性倾向，不宣称强一致性。
 - Prometheus exporter 位于调用方 HTTP 层，核心包保持对 Prometheus 的零依赖。
 - HTTP API 主要用于演示和压测入口，核心节点通信使用 gRPC。
+- 当前未覆盖网络分区、双节点同时故障和小时级浸泡测试。
 
 ## 后续计划
 
 - 编写真实三进程自动化集成测试；
-- 补充更长时间的稳定性测试；
-- 补充 CPU、内存、goroutine 等资源监控；
-- 整理架构图和请求流程图；
-- 完善 README 中的示意图和运行截图。
+- 补充强制进程终止、网络分区和双节点故障测试；
+- 接入可选 pprof 诊断端点，分析 CPU、内存、goroutine 与锁竞争；
+- 在独立物理压测机环境中继续探测服务端吞吐上限；
+- 补充小时级浸泡测试与内存、GC 曲线。
+
+## 文档
+
+- [Quick Start](./QUICKSTART.md)：根包接入和节点启动示例；
+- [性能测试与验证报告](./PERFORMANCE_TEST_REPORT.md)：测试环境、负载模型、阶梯压测和故障恢复数据；
+- [CI 工作流](./.github/workflows/ci.yml)：自动格式检查、静态检查、测试、Race Detector 和构建；
+- [MIT License](./LICENSE)：项目的使用、修改和分发许可。
 
 ## 项目概述参考
 
