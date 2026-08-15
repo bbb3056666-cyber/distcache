@@ -7,6 +7,7 @@ import (
 	"github.com/bbb3056666-cyber/distcache/pkg/bloom"
 	"log/slog"
 	"math/rand/v2"
+	"strconv"
 	"sync"
 	"time"
 
@@ -29,6 +30,11 @@ var (
 	groups = make(map[string]*Group)
 )
 
+type keyState struct {
+	generation uint64
+	inFlight   int
+}
+
 // Group 是一个缓存命名空间。
 type Group struct {
 	name           string
@@ -43,6 +49,8 @@ type Group struct {
 	ctx            context.Context
 	cancel         context.CancelFunc
 	metrics        groupMetricCounters
+	stateMu        sync.Mutex
+	states         map[string]*keyState
 }
 
 // NewGroup 创建缓存命名空间并注册到进程内全局表。
@@ -200,44 +208,103 @@ func (g *Group) Get(ctx context.Context, key string) (ByteView, error) {
 	return g.load(ctx, key)
 }
 
+func (g *Group) beginLoad(key string) uint64 {
+	g.stateMu.Lock()
+	defer g.stateMu.Unlock()
+
+	if g.states == nil {
+		g.states = make(map[string]*keyState)
+	}
+	state := g.states[key]
+	if state == nil {
+		state = &keyState{}
+		g.states[key] = state
+	}
+	state.inFlight++
+	return state.generation
+}
+
+func (g *Group) finishLoad(key string) {
+	g.stateMu.Lock()
+	defer g.stateMu.Unlock()
+
+	state := g.states[key]
+	if state == nil {
+		return
+	}
+	state.inFlight--
+	if state.inFlight == 0 {
+		delete(g.states, key)
+	}
+}
+
+func (g *Group) cacheIfCurrent(key string, generation uint64, entry cacheEntry, ttl time.Duration) bool {
+	g.stateMu.Lock()
+	defer g.stateMu.Unlock()
+
+	state := g.states[key]
+	if state == nil || state.generation != generation {
+		return false
+	}
+	g.cache.AddWithTTL(key, entry, ttl)
+	return true
+}
+
 func (g *Group) load(ctx context.Context, key string) (ByteView, error) {
 	if g.bloomFilter != nil && !g.bloomFilter.Test(key) {
 		g.metrics.bloomRejected.Add(1)
 		return ByteView{}, ErrNotFound
 	}
 
+	generation := g.beginLoad(key)
+	defer g.finishLoad(key)
+	flightKey := strconv.FormatUint(generation, 10) + "\x00" + key
+
 	startedAt := time.Now()
 	defer func() {
 		g.metrics.loadLatency.observe(time.Since(startedAt))
 	}()
 
-	v, err := g.loader.Do(ctx, key, func() (any, error) {
-		if g.peerPicker != nil {
-			if peerGetter, ok := g.peerPicker.PickPeer(key); ok {
-				value, err := g.getFromPeer(ctx, peerGetter, key)
-				if err == nil {
-					return value, nil
-				}
-				if errors.Is(err, ErrNotFound) {
-					return ByteView{}, err
-				}
-				g.metrics.loadErrors.Add(1)
-				slog.Warn(
-					"remote load failed, falling back to local",
-					"component", "cache",
-					"group", g.name,
-					"key", key,
-					"fallback", "local",
-					"err", err,
-				)
+	v, err := g.loader.Do(ctx, flightKey, func() (any, error) {
+		value, err := g.loadValue(ctx, key)
+		if err != nil {
+			if errors.Is(err, ErrNotFound) {
+				g.setNonExist(key, generation)
+				return ByteView{}, ErrNotFound
 			}
+			return ByteView{}, err
 		}
-		return g.getLocally(ctx, key)
+		g.cacheIfCurrent(key, generation, cacheEntry{view: value, found: true}, g.jitteredTTL(g.ttl))
+		return value, nil
 	})
 	if err != nil {
 		return ByteView{}, err
 	}
 	return v.(ByteView), nil
+}
+
+func (g *Group) loadValue(ctx context.Context, key string) (ByteView, error) {
+	if g.peerPicker != nil {
+		if peerGetter, ok := g.peerPicker.PickPeer(key); ok {
+			value, err := g.getFromPeer(ctx, peerGetter, key)
+			if err == nil {
+				return value, nil
+			}
+			if errors.Is(err, ErrNotFound) {
+				return ByteView{}, err
+			}
+			g.metrics.loadErrors.Add(1)
+			slog.Warn(
+				"remote load failed, falling back to local",
+				"component", "cache",
+				"group", g.name,
+				"key", key,
+				"fallback", "local",
+				"err", err,
+			)
+		}
+	}
+	return g.getLocally(ctx, key)
 }
 
 func (g *Group) getFromPeer(ctx context.Context, peerGetter PeerGetter, key string) (ByteView, error) {
@@ -248,9 +315,6 @@ func (g *Group) getFromPeer(ctx context.Context, peerGetter PeerGetter, key stri
 	duration := time.Since(startedAt)
 	g.metrics.peerReadLatency.observe(duration)
 	if err != nil {
-		if errors.Is(err, ErrNotFound) {
-			g.setNonExist(key)
-		}
 		return ByteView{}, err
 	}
 
@@ -262,7 +326,6 @@ func (g *Group) getFromPeer(ctx context.Context, peerGetter PeerGetter, key stri
 		"duration", duration,
 	)
 	value := ByteView{b: cloneBytes(res)}
-	g.cache.AddWithTTL(key, cacheEntry{view: value, found: true}, g.jitteredTTL(g.ttl))
 	return value, nil
 }
 
@@ -274,9 +337,7 @@ func (g *Group) getLocally(ctx context.Context, key string) (ByteView, error) {
 	duration := time.Since(startedAt)
 	g.metrics.localLoadLatency.observe(duration)
 	if err != nil {
-		if errors.Is(err, ErrNotFound) {
-			g.setNonExist(key)
-		} else {
+		if !errors.Is(err, ErrNotFound) {
 			slog.Warn(
 				"local load failed",
 				"component", "cache",
@@ -298,13 +359,13 @@ func (g *Group) getLocally(ctx context.Context, key string) (ByteView, error) {
 		"duration", duration,
 	)
 	value := ByteView{b: cloneBytes(data)}
-	g.cache.AddWithTTL(key, cacheEntry{view: value, found: true}, g.jitteredTTL(g.ttl))
 	return value, nil
 }
 
-func (g *Group) setNonExist(key string) {
-	g.cache.AddWithTTL(
+func (g *Group) setNonExist(key string, generation uint64) bool {
+	return g.cacheIfCurrent(
 		key,
+		generation,
 		cacheEntry{
 			view:  ByteView{},
 			found: false,
@@ -344,15 +405,23 @@ func (g *Group) Remove(key string) error {
 
 // RemoveLocal 只删除本节点缓存。
 func (g *Group) RemoveLocal(key string) {
-	if key != "" {
-		g.cache.Remove(key)
-		slog.Debug(
-			"cache key removed locally",
-			"component", "cache",
-			"group", g.name,
-			"key", key,
-		)
+	if key == "" {
+		return
 	}
+
+	g.stateMu.Lock()
+	if state := g.states[key]; state != nil {
+		state.generation++
+	}
+	g.cache.Remove(key)
+	g.stateMu.Unlock()
+
+	slog.Debug(
+		"cache key removed locally",
+		"component", "cache",
+		"group", g.name,
+		"key", key,
+	)
 }
 
 // Stats 返回底层缓存统计快照。

@@ -1,29 +1,81 @@
+// 节点间 gRPC 通信的接口定义
+//
+// 这个文件是"接口蓝图"——声明了：
+//   - 消息长什么样（message）
+//   - 提供哪些远程方法（service + rpc）
+//
+// 为什么用 protobuf 而不是 JSON？
+//   - 体积小：二进制编码，比 JSON 文本小得多（尤其是值很大的时候）
+//   - 快：无需解析文本，直接二进制序列化
+//   - 强类型：.proto 文件就是跨语言契约
+//
+// 编译命令（生成 cachepb.pb.go）：
+//   protoc --proto_path=pkg/cachepb --go_out=pkg/cachepb \
+//          --go_opt=paths=source_relative pkg/cachepb/cachepb.proto
+//
+// 用 protoc 生成 Go 代码后，客户端/服务端都有现成的骨架。
+//
+// syntax	关键字：声明用哪个语法版本
 syntax = "proto3";
 
+//proto的包名
 package grpcpeer;
 
+//Go导入路径;包名
 option go_package = "distcache/grpcpeer;grpcpeer";
 
+// import 语法：复用别的 proto 文件里定义的消息。
+// 路径是相对 --proto_path 的proto 的"依赖管理"
+// import "pkg/cachepb/cachepb.proto";
+
+// message	：定义一个"消息"（相当于 Go 的 struct）
+// 字段完整格式：类型 字段名 = 字段编号;
+// Request 一个缓存查询请求：在哪个组、查哪个 key。
+// proto 字段名约定小写下划线（group_name），生成的 Go 代码会自动转成驼峰 GroupName
 message Request {
-  string group = 1;
-  string key = 2;
+  string group = 1; // 组名（如 scores）
+  string key = 2;   // 要查的 key（如 Tom）
 }
 
+// bytes 对应go中 []byte	裸字节（图片/音频/序列化数据）
 message Response {
   bytes value = 1;
 }
 
+// 失效通知：告诉别的节点"这个 key 别缓存了"
 message Invalidation {
-  string group = 1;
-  string key = 2;
+  uint64 id = 1;
+  string group = 2;
+  string key = 3;
 }
 
+//确认通知
 message Ack {
-  string group = 1;
-  string key = 2;
+  uint64 id = 1;
+  string group = 2;
+  string key = 3;
 }
 
+// 缓存服务：节点之间调用的方法都声明在这里。
+// service：声明一个 RPC 服务（一组远程方法的集合）,名字是GroupCache
+// rpc: 声明一个远程方法
+// 注意消息用了 cachepb.Request / cachepb.Response（跨包引用，要带包名前缀）。
+// 一个service对应一个客户端桩,通常一个proto文件一个service
 service GroupCache {
+  //定义一个远程方法 Get，传入 Request，返回 Response
   rpc Get(Request) returns (Response);
-  rpc Invalidate(stream Invalidation) returns (stream Ack);
+  rpc Invalidate(stream Invalidation) returns (stream Ack);  // 双向流
 }
+
+//一条TCP连接 = 多个 HTTP/2 流
+//每个 RPC = 一个 HTTP/2 流
+//unary RPC：   开流 → 发请求 → 收响应 → 关流     （短暂流，用完即关）
+//streaming RPC：开流 → 常驻 → 持续收发 → 结束才关（长期流）
+//四种 RPC 类型:
+//RPC类型	                    proto写法	                          stream 加哪
+//unary（一发一收）	            rpc X(A) returns (B);	              不加
+//server streaming（一发多收）	rpc X(A) returns (stream B);	      返回前加
+//client streaming（多发一收）	rpc X(stream A) returns (B);	      入参前加
+//bidi streaming（多发多收）	  rpc X(stream A) returns (stream B); 都加
+
+//哪边要"连续流"，就在哪边的消息类型前加 stream

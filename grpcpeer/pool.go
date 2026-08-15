@@ -3,6 +3,7 @@ package grpcpeer
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 
 	"google.golang.org/grpc"
@@ -38,7 +39,7 @@ func (p *Pool) Set(addrs ...string) error {
 			continue
 		}
 		conn, err := grpc.NewClient(
-			addr,
+			grpcTarget(addr),
 			grpc.WithTransportCredentials(insecure.NewCredentials()),
 		)
 		if err != nil {
@@ -48,6 +49,13 @@ func (p *Pool) Set(addrs ...string) error {
 		p.conns[addr] = conn
 	}
 	return errors.Join(errs...)
+}
+
+func grpcTarget(addr string) string {
+	if strings.Contains(addr, "://") {
+		return addr
+	}
+	return "passthrough:///" + addr
 }
 
 func (p *Pool) Get(addr string) (*grpc.ClientConn, bool) {

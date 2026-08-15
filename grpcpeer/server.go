@@ -175,7 +175,7 @@ func (s *cacheServer) Invalidate(stream grpc.BidiStreamingServer[Invalidation, A
 				group.RemoveLocal(msg.GetKey())
 			}
 
-			if err := stream.Send(&Ack{Group: msg.GetGroup(), Key: msg.GetKey()}); err != nil {
+			if err := stream.Send(&Ack{Id: msg.GetId(), Group: msg.GetGroup(), Key: msg.GetKey()}); err != nil {
 				slog.Warn(
 					"invalidation ack send failed",
 					"component", "grpc",

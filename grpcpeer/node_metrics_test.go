@@ -15,9 +15,15 @@ func TestNodeMetrics(t *testing.T) {
 	router.RemovePeer("node-b")
 
 	broadcaster := NewBroadcaster("node-a", pool)
-	broadcaster.peerStreams["node-c"] = &peerStream{sendCh: make(chan *Invalidation)}
+	delivery := &peerDelivery{sendCh: make(chan *Invalidation, 1), pendingMsgs: make(map[uint64]*pendingMessage)}
+	delivery.active.Store(true)
+	delivery.addPending(&Invalidation{Id: 1})
+	delivery.addPending(&Invalidation{Id: 2})
+	broadcaster.deliveries["node-c"] = delivery
 	broadcaster.metrics.sent.Add(3)
 	broadcaster.metrics.acked.Add(1)
+	broadcaster.metrics.deferred.Add(2)
+	broadcaster.metrics.retried.Add(4)
 	broadcaster.metrics.dropped.Add(2)
 	broadcaster.metrics.failures.Add(1)
 	health := NewHealthChecker("node-a", pool, router)
@@ -42,6 +48,9 @@ func TestNodeMetrics(t *testing.T) {
 	}
 	if metrics.BroadcastSent != 3 || metrics.BroadcastAcked != 1 || metrics.BroadcastUnacked != 2 {
 		t.Fatalf("broadcast counts = %+v, want sent=3 acked=1 unacked=2", metrics)
+	}
+	if metrics.BroadcastDeferred != 2 || metrics.BroadcastRetried != 4 {
+		t.Fatalf("delivery counts = %+v, want deferred=2 retried=4", metrics)
 	}
 	if metrics.BroadcastDropped != 2 || metrics.BroadcastFailures != 1 || metrics.ActiveBroadcastStreams != 1 {
 		t.Fatalf("broadcast state = %+v, want dropped=2 failures=1 streams=1", metrics)

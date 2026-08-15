@@ -3,14 +3,143 @@ package core
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 )
+
+type getResult struct {
+	value ByteView
+	err   error
+}
 
 var testDB = map[string]string{
 	"Tom":  "630",
 	"Jack": "589",
 	"Sam":  "567",
+}
+
+func TestRemoveDuringLoadDoesNotCacheStaleValue(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var calls atomic.Int32
+
+	g := NewGroup("generation-positive", GetterFunc(func(context.Context, string) ([]byte, error) {
+		if calls.Add(1) == 1 {
+			close(started)
+			<-release
+			return []byte("old"), nil
+		}
+		return []byte("new"), nil
+	}), WithTTL(0))
+	defer g.Close()
+
+	firstResult := make(chan getResult, 1)
+	go func() {
+		value, err := g.Get(context.Background(), "Tom")
+		firstResult <- getResult{value: value, err: err}
+	}()
+
+	<-started
+	g.RemoveLocal("Tom")
+	close(release)
+	first := <-firstResult
+	if first.err != nil || first.value.String() != "old" {
+		t.Fatalf("first Get() = (%q, %v), want (old, nil)", first.value.String(), first.err)
+	}
+
+	second, err := g.Get(context.Background(), "Tom")
+	if err != nil || second.String() != "new" || calls.Load() != 2 {
+		t.Fatalf("second Get() = (%q, %v), calls=%d; want (new, nil), calls=2", second.String(), err, calls.Load())
+	}
+}
+
+func TestRemoveDuringNotFoundDoesNotCacheStaleNegative(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var calls atomic.Int32
+
+	g := NewGroup("generation-negative", GetterFunc(func(context.Context, string) ([]byte, error) {
+		if calls.Add(1) == 1 {
+			close(started)
+			<-release
+			return nil, ErrNotFound
+		}
+		return []byte("created"), nil
+	}), WithTTL(0))
+	defer g.Close()
+
+	firstResult := make(chan getResult, 1)
+	go func() {
+		value, err := g.Get(context.Background(), "Tom")
+		firstResult <- getResult{value: value, err: err}
+	}()
+
+	<-started
+	g.RemoveLocal("Tom")
+	close(release)
+	if first := <-firstResult; !errors.Is(first.err, ErrNotFound) {
+		t.Fatalf("first Get() error = %v, want ErrNotFound", first.err)
+	}
+
+	second, err := g.Get(context.Background(), "Tom")
+	if err != nil || second.String() != "created" || calls.Load() != 2 {
+		t.Fatalf("second Get() = (%q, %v), calls=%d; want (created, nil), calls=2", second.String(), err, calls.Load())
+	}
+}
+
+func TestRequestAfterRemoveUsesNewSingleflightGeneration(t *testing.T) {
+	firstStarted := make(chan struct{})
+	secondStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	var calls atomic.Int32
+
+	g := NewGroup("generation-singleflight", GetterFunc(func(context.Context, string) ([]byte, error) {
+		switch calls.Add(1) {
+		case 1:
+			close(firstStarted)
+			<-releaseFirst
+			return []byte("old"), nil
+		case 2:
+			close(secondStarted)
+			return []byte("new"), nil
+		default:
+			return []byte("unexpected"), nil
+		}
+	}), WithTTL(0))
+	defer g.Close()
+
+	firstResult := make(chan getResult, 1)
+	go func() {
+		value, err := g.Get(context.Background(), "Tom")
+		firstResult <- getResult{value: value, err: err}
+	}()
+	<-firstStarted
+	g.RemoveLocal("Tom")
+
+	secondResult := make(chan getResult, 1)
+	go func() {
+		value, err := g.Get(context.Background(), "Tom")
+		secondResult <- getResult{value: value, err: err}
+	}()
+	select {
+	case <-secondStarted:
+	case <-time.After(time.Second):
+		close(releaseFirst)
+		t.Fatal("request after Remove shared the old singleflight call")
+	}
+	second := <-secondResult
+	if second.err != nil || second.value.String() != "new" {
+		close(releaseFirst)
+		t.Fatalf("second Get() = (%q, %v), want (new, nil)", second.value.String(), second.err)
+	}
+	close(releaseFirst)
+	<-firstResult
+
+	cached, err := g.Get(context.Background(), "Tom")
+	if err != nil || cached.String() != "new" || calls.Load() != 2 {
+		t.Fatalf("cached Get() = (%q, %v), calls=%d; want (new, nil), calls=2", cached.String(), err, calls.Load())
+	}
 }
 
 type latencyTestPeerPicker struct {

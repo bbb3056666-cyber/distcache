@@ -97,6 +97,8 @@ type NodeMetrics struct {
 	BroadcastSent          uint64
 	BroadcastAcked         uint64
 	BroadcastUnacked       uint64
+	BroadcastDeferred      uint64
+	BroadcastRetried       uint64
 	BroadcastDropped       uint64
 	BroadcastFailures      uint64
 	ActiveBroadcastStreams int
@@ -125,6 +127,8 @@ func (n *Node) Metrics() NodeMetrics {
 		BroadcastSent:          broadcastStats.Sent,
 		BroadcastAcked:         broadcastStats.Acked,
 		BroadcastUnacked:       broadcastStats.Unacked,
+		BroadcastDeferred:      broadcastStats.Deferred,
+		BroadcastRetried:       broadcastStats.Retried,
 		BroadcastDropped:       broadcastStats.Dropped,
 		BroadcastFailures:      broadcastStats.Failures,
 		ActiveBroadcastStreams: broadcastStats.ActiveStreams,

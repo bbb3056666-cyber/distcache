@@ -125,7 +125,9 @@ func (g *Group) finish(c *call) {
 	for i, ch := range c.chans {
 		ch <- Result{Val: c.val, Err: c.err, Shared: dups > 0 || i > 0}
 	}
-	delete(g.m, c.key)
+	if g.m[c.key] == c {
+		delete(g.m, c.key)
+	}
 	g.mu.Unlock()
 }
 
