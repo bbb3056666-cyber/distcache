@@ -142,6 +142,98 @@ func TestRequestAfterRemoveUsesNewSingleflightGeneration(t *testing.T) {
 	}
 }
 
+func TestMaxConcurrentLoadsLimitsLocalGetter(t *testing.T) {
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	secondStarted := make(chan struct{})
+	var calls atomic.Int32
+
+	g := NewGroup("limited-loads", GetterFunc(func(_ context.Context, key string) ([]byte, error) {
+		if calls.Add(1) == 1 {
+			close(firstStarted)
+			<-releaseFirst
+		} else {
+			close(secondStarted)
+		}
+		return []byte(key), nil
+	}), WithTTL(0), WithMaxConcurrentLoads(1))
+	defer g.Close()
+
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := g.Get(context.Background(), "first")
+		firstDone <- err
+	}()
+	<-firstStarted
+
+	secondDone := make(chan error, 1)
+	go func() {
+		_, err := g.Get(context.Background(), "second")
+		secondDone <- err
+	}()
+
+	select {
+	case <-secondStarted:
+		t.Fatal("second local load started before the first released its slot")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(releaseFirst)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first Get() error = %v", err)
+	}
+	if err := <-secondDone; err != nil {
+		t.Fatalf("second Get() error = %v", err)
+	}
+}
+
+func TestMaxConcurrentLoadsWaitRespectsContext(t *testing.T) {
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	var calls atomic.Int32
+
+	g := NewGroup("limited-load-cancel", GetterFunc(func(_ context.Context, key string) ([]byte, error) {
+		calls.Add(1)
+		if key == "first" {
+			close(firstStarted)
+			<-releaseFirst
+		}
+		return []byte(key), nil
+	}), WithTTL(0), WithMaxConcurrentLoads(1))
+	defer g.Close()
+
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := g.Get(context.Background(), "first")
+		firstDone <- err
+	}()
+	<-firstStarted
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := g.Get(ctx, "second")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("second Get() error = %v, want context.Canceled", err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("getter calls = %d, want 1", got)
+	}
+
+	close(releaseFirst)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first Get() error = %v", err)
+	}
+}
+
+func TestWithMaxConcurrentLoadsRejectsNegativeValue(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("WithMaxConcurrentLoads(-1) did not panic")
+		}
+	}()
+	_ = WithMaxConcurrentLoads(-1)
+}
+
 type latencyTestPeerPicker struct {
 	peer PeerGetter
 }

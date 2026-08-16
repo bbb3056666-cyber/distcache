@@ -23,11 +23,12 @@ type (
 var (
 	ErrNotFound = core.ErrNotFound
 	// 建组可选选项
-	WithMaxBytes       = core.WithMaxBytes
-	WithTTL            = core.WithTTL
-	WithBloomKeys      = core.WithBloomKeys
-	WithTTLJitter      = core.WithTTLJitterRatio
-	WithTTLJitterRatio = core.WithTTLJitterRatio
+	WithMaxBytes           = core.WithMaxBytes
+	WithTTL                = core.WithTTL
+	WithBloomKeys          = core.WithBloomKeys
+	WithTTLJitter          = core.WithTTLJitterRatio
+	WithTTLJitterRatio     = core.WithTTLJitterRatio
+	WithMaxConcurrentLoads = core.WithMaxConcurrentLoads
 )
 
 // Config 是缓存节点配置。

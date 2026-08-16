@@ -16,10 +16,11 @@ import (
 )
 
 const (
-	defaultCacheBytes     int64 = 1 << 20
-	defaultTTL                  = 5 * time.Minute
-	defaultTTLJitterRatio       = 0.2
-	notFoundTTL                 = 5 * time.Second
+	defaultCacheBytes         int64 = 1 << 20
+	defaultTTL                      = 5 * time.Minute
+	defaultTTLJitterRatio           = 0.2
+	notFoundTTL                     = 5 * time.Second
+	defaultMaxConcurrentLoads       = 0
 )
 
 // ErrNotFound 表示 key 在数据源中不存在。
@@ -49,6 +50,7 @@ type Group struct {
 	ctx            context.Context
 	cancel         context.CancelFunc
 	metrics        groupMetricCounters
+	loadSem        chan struct{}
 	stateMu        sync.Mutex
 	states         map[string]*keyState
 }
@@ -77,6 +79,9 @@ func NewGroup(name string, localGetter LocalGetter, opts ...Option) *Group {
 		ctx:            ctx,
 		cancel:         cancel,
 	}
+	if cfg.maxConcurrentLoads > 0 {
+		g.loadSem = make(chan struct{}, cfg.maxConcurrentLoads)
+	}
 
 	mu.Lock()
 	groups[name] = g
@@ -101,12 +106,13 @@ func (g *Group) Close() {
 }
 
 type config struct {
-	maxBytes       int64
-	ttl            time.Duration
-	bloomFilter    *bloom.Filter
-	ttlJitterRatio float64
-	peerPicker     PeerPicker
-	broadcaster    Broadcaster
+	maxBytes           int64
+	ttl                time.Duration
+	bloomFilter        *bloom.Filter
+	ttlJitterRatio     float64
+	peerPicker         PeerPicker
+	broadcaster        Broadcaster
+	maxConcurrentLoads int
 }
 
 // Option 修改 Group 配置。
@@ -153,8 +159,21 @@ func WithBroadcaster(b Broadcaster) Option {
 	return func(c *config) { c.broadcaster = b }
 }
 
+// WithMaxConcurrentLoads 限制同一 Group 同时执行的本地回源数量，0 表示不限制。
+func WithMaxConcurrentLoads(n int) Option {
+	if n < 0 {
+		panic("core: max concurrent loads must not be negative")
+	}
+	return func(c *config) { c.maxConcurrentLoads = n }
+}
+
 func defaultConfig() *config {
-	return &config{maxBytes: defaultCacheBytes, ttl: defaultTTL, ttlJitterRatio: defaultTTLJitterRatio}
+	return &config{
+		maxBytes:           defaultCacheBytes,
+		ttl:                defaultTTL,
+		ttlJitterRatio:     defaultTTLJitterRatio,
+		maxConcurrentLoads: defaultMaxConcurrentLoads,
+	}
 }
 
 // GetGroup 按名字查找 Group。
@@ -330,6 +349,15 @@ func (g *Group) getFromPeer(ctx context.Context, peerGetter PeerGetter, key stri
 }
 
 func (g *Group) getLocally(ctx context.Context, key string) (ByteView, error) {
+	if g.loadSem != nil {
+		select {
+		case g.loadSem <- struct{}{}:
+			defer func() { <-g.loadSem }()
+		case <-ctx.Done():
+			return ByteView{}, ctx.Err()
+		}
+	}
+
 	g.metrics.localLoads.Add(1)
 
 	startedAt := time.Now()

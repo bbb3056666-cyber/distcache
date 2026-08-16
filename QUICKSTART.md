@@ -35,6 +35,7 @@ scores := dc.NewGroup("scores", distcache.GetterFunc(
 	}),
 	distcache.WithTTL(5*time.Minute),
 	distcache.WithBloomKeys("Tom", "Jack", "Sam"),
+	distcache.WithMaxConcurrentLoads(100),
 )
 ```
 
@@ -125,6 +126,7 @@ func main() {
 		}),
 		distcache.WithTTL(5*time.Minute),
 		distcache.WithBloomKeys("Tom", "Jack", "Sam"),
+		distcache.WithMaxConcurrentLoads(100),
 	)
 
 	go func() {
