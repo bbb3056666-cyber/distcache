@@ -4,9 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 [![Go Version](https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go)](./go.mod)
 
-`distcache` 是一个使用 Go 实现的分布式缓存项目，包含本地缓存、缓存过期、防穿透、防击穿、一致性哈希路由、gRPC 远程读取、gRPC 双向流缓存失效广播、健康检查与节点摘除恢复等能力。
-
-项目重点是把一个缓存系统从单机能力扩展到分布式节点协作，并通过指标、日志和压测结果证明核心链路可运行。
+`distcache` 是一个基于 Go 实现的多节点分布式缓存系统，通过一致性哈希完成缓存路由，使用 gRPC 实现节点间远程读取与缓存失效通知，并结合 singleflight、Bloom Filter 和 Generation 机制解决缓存击穿、穿透及并发删除导致的旧值回写问题。系统支持节点健康检查、自动摘除恢复、优雅关闭及运行指标观测，并通过竞态检测和多节点混合压测验证并发安全性与稳定性。
 
 ## 核心特性
 
@@ -385,9 +383,3 @@ go test -race ./... 通过，未检测到数据竞争。
 - [性能测试与验证报告](./PERFORMANCE_TEST_REPORT.md)：测试环境、负载模型、阶梯压测和故障恢复数据；
 - [CI 工作流](./.github/workflows/ci.yml)：自动格式检查、静态检查、测试、Race Detector 和构建；
 - [MIT License](./LICENSE)：项目的使用、修改和分发许可。
-
-## 项目概述参考
-
-可以概括为：
-
-> 基于 Go 实现分布式缓存系统，支持 LRU、TTL、负缓存、Bloom Filter 防穿透、singleflight 防击穿、Generation 防旧值回写、一致性哈希路由、gRPC 远程读取、带 Ack/重试/重连补发的失效广播，以及健康检查驱动的节点摘除、恢复与优雅关闭；通过结构化日志和 `/stats` 指标观测缓存命中、远程读、广播 Ack、节点恢复等关键行为，并完成单节点和三节点场景下的功能验证、接口压测与竞态检测。
