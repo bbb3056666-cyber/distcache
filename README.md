@@ -15,6 +15,7 @@
 - Bloom Filter：在回源前拦截明确不存在的 key，降低缓存穿透风险。
 - singleflight：同一 key 的并发 miss 只触发一次加载，避免缓存击穿。
 - 回源并发限制：可按 Group 限制同时执行的本地数据源加载数，等待期间响应请求取消，避免下游被大量不同 key 的 miss 打满。
+- 热点预热：调用方提供热点 key，Group 使用固定数量的 worker 复用完整 Get 流程进行受控预加载。
 - Generation 防旧值回写：加载前记录 key 版本，Remove 后拒绝将并发加载得到的旧结果重新写入缓存。
 - 一致性哈希：将 key 路由到归属节点，减少节点变更时的缓存迁移范围。
 - gRPC 远程读取：本地 miss 后可从 key 的归属节点读取数据。
@@ -162,6 +163,12 @@ scores := dc.NewGroup("scores", distcache.GetterFunc(
 	distcache.WithBloomKeys("Tom", "Sam"),
 	distcache.WithMaxConcurrentLoads(100),
 )
+
+warmUp, err := scores.WarmUp(context.Background(), []string{"Tom", "Sam"}, 2)
+if err != nil {
+	log.Fatal(err)
+}
+log.Printf("warm-up: %+v", warmUp)
 
 go dc.Serve()
 value, err := scores.Get(context.Background(), "Tom")

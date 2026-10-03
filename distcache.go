@@ -17,6 +17,7 @@ type (
 	Option         = core.Option
 	GroupMetrics   = core.GroupMetrics
 	LatencyBuckets = core.LatencyBuckets
+	WarmUpResult   = core.WarmUpResult
 	NodeMetrics    = grpcpeer.NodeMetrics
 )
 
