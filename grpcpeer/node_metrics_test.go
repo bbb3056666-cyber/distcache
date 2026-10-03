@@ -15,7 +15,7 @@ func TestNodeMetrics(t *testing.T) {
 	router.RemovePeer("node-b")
 
 	broadcaster := NewBroadcaster("node-a", pool)
-	delivery := &peerDelivery{sendCh: make(chan *Invalidation, 1), pendingMsgs: make(map[uint64]*pendingMessage)}
+	delivery := newPeerDelivery(1)
 	delivery.active.Store(true)
 	delivery.addPending(&Invalidation{Id: 1})
 	delivery.addPending(&Invalidation{Id: 2})

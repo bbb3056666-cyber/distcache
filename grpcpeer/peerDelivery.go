@@ -5,125 +5,61 @@ import (
 	"sort"
 	"sync"
 	"sync/atomic"
-	"time"
 )
 
-// peerDelivery 专门管理一个节点的消息
+// peerDelivery 管理发往单个节点的失效消息。
 type peerDelivery struct {
-	sendCh      chan *Invalidation         // 外部只能往这里塞消息，自己不碰 stream
-	pendingMu   sync.Mutex                 // 每个节点一把锁
-	pendingMsgs map[uint64]*pendingMessage // 这个peer尚未收到ACK的消息
-	active      atomic.Bool                // 流是否活着
+	sendCh      chan *Invalidation
+	pendingMu   sync.Mutex
+	pendingMsgs map[uint64]*Invalidation
+	stateCh     chan struct{}
+	restartCh   chan struct{}
+	active      atomic.Bool
 }
 
-type pendingMessage struct {
-	inv        *Invalidation //失效消息
-	lastSentAt time.Time     //最近一次Send时间
-	scheduled  bool          //是否在调度
-	retryCount int           //重试过多少次
+func newPeerDelivery(sendCapacity int) *peerDelivery {
+	return &peerDelivery{
+		sendCh:      make(chan *Invalidation, sendCapacity),
+		pendingMsgs: make(map[uint64]*Invalidation),
+		stateCh:     make(chan struct{}, 1),
+		restartCh:   make(chan struct{}, 1),
+	}
 }
 
-func (pd *peerDelivery) finishSend(id uint64, success bool) {
+// addPending 在发送前记录消息。只有队列从空变为非空时才唤醒 Ack 看门狗。
+func (pd *peerDelivery) addPending(inv *Invalidation) bool {
 	pd.pendingMu.Lock()
-	defer pd.pendingMu.Unlock()
-
-	pendingMsg := pd.pendingMsgs[id]
-	if pendingMsg == nil {
-		// ACK 可能已经先到并删除了 pending
-		return
+	if len(pd.pendingMsgs) >= maxPendingPerPeer {
+		pd.pendingMu.Unlock()
+		return false
 	}
-
-	pendingMsg.scheduled = false
-	if success {
-		pendingMsg.lastSentAt = time.Now()
+	if pd.pendingMsgs == nil {
+		pd.pendingMsgs = make(map[uint64]*Invalidation)
 	}
+	wasEmpty := len(pd.pendingMsgs) == 0
+	pd.pendingMsgs[inv.GetId()] = inv
+	pd.pendingMu.Unlock()
+
+	if wasEmpty {
+		pd.signalStateChange()
+	}
+	return true
 }
 
 func (pd *peerDelivery) tryEnqueue(id uint64) bool {
 	pd.pendingMu.Lock()
-	defer pd.pendingMu.Unlock()
-
-	pendingMsg := pd.pendingMsgs[id]
-	if pendingMsg == nil {
+	inv := pd.pendingMsgs[id]
+	pd.pendingMu.Unlock()
+	if inv == nil {
 		return false
 	}
 
-	if pendingMsg.scheduled {
-		return true
-	}
-
 	select {
-	// 只往channel发送消息,并发安全
-	// 不调用Send,因为一个流被同时Send会panic
-	// Send的任务交给另一个goroutine串行执行
-	case pd.sendCh <- pendingMsg.inv:
-		pendingMsg.scheduled = true
+	case pd.sendCh <- inv:
 		return true
 	default:
 		return false
 	}
-}
-
-func (pd *peerDelivery) runRetryLoop(addr string, b *Broadcaster) {
-	ticker := time.NewTicker(retryScanInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case now := <-ticker.C:
-			retried := pd.retryExpired(now)
-			if retried == 0 {
-				continue
-			}
-
-			b.metrics.retried.Add(uint64(retried))
-			slog.Debug(
-				"invalidation messages scheduled for retry",
-				"component", "broadcaster",
-				"peer", addr,
-				"count", retried,
-			)
-
-		case <-b.ctx.Done():
-			return
-		}
-	}
-}
-
-func (pd *peerDelivery) retryExpired(now time.Time) int {
-	if !pd.active.Load() {
-		return 0
-	}
-
-	pd.pendingMu.Lock()
-	defer pd.pendingMu.Unlock()
-
-	retried := 0
-
-	for _, pendingMsg := range pd.pendingMsgs {
-		// 已经在队列中或正在发送，不能重复调度
-		if pendingMsg.scheduled {
-			continue
-		}
-
-		// 发送过并且尚未超时，继续等待 ACK
-		if !pendingMsg.lastSentAt.IsZero() &&
-			now.Sub(pendingMsg.lastSentAt) < ackTimeout {
-			continue
-		}
-
-		select {
-		case pd.sendCh <- pendingMsg.inv:
-			pendingMsg.scheduled = true
-			pendingMsg.retryCount++
-			retried++
-		default:
-			// 队列已经满了，继续遍历也没有意义
-			return retried
-		}
-	}
-
-	return retried
 }
 
 func (pd *peerDelivery) pendingCount() int {
@@ -132,15 +68,14 @@ func (pd *peerDelivery) pendingCount() int {
 	return len(pd.pendingMsgs)
 }
 
-// pendingForPeer 返回某个节点未收到ack的消息,按id升序
+// pendingForPeer 返回某个节点尚未确认的消息，并按 ID 排序供重连补发。
 func (pd *peerDelivery) pendingForPeer() []*Invalidation {
 	pd.pendingMu.Lock()
 	defer pd.pendingMu.Unlock()
 
 	messages := make([]*Invalidation, 0, len(pd.pendingMsgs))
-	for _, pendingMsg := range pd.pendingMsgs {
-		pendingMsg.scheduled = true
-		messages = append(messages, pendingMsg.inv)
+	for _, inv := range pd.pendingMsgs {
+		messages = append(messages, inv)
 	}
 	sort.Slice(messages, func(i, j int) bool {
 		return messages[i].GetId() < messages[j].GetId()
@@ -148,32 +83,52 @@ func (pd *peerDelivery) pendingForPeer() []*Invalidation {
 	return messages
 }
 
-func (pd *peerDelivery) addPending(inv *Invalidation) bool {
-	pd.pendingMu.Lock()
-	defer pd.pendingMu.Unlock()
-
-	if len(pd.pendingMsgs) >= maxPendingPerPeer {
-		return false
-	}
-
-	pd.pendingMsgs[inv.GetId()] = &pendingMessage{inv: inv}
-	return true
-}
-
 func (pd *peerDelivery) ackPending(id uint64) bool {
 	return pd.removePending(id)
 }
+
 func (pd *peerDelivery) removePending(id uint64) bool {
 	pd.pendingMu.Lock()
-	defer pd.pendingMu.Unlock()
-
-	//nil map 可以查、可以遍历、可以 len、可以 delete，但不能直接赋值写入
 	if _, ok := pd.pendingMsgs[id]; !ok {
-		// 找不到对应的待确认消息，可能是重复、未知或过期 ACK
+		pd.pendingMu.Unlock()
 		return false
 	}
 	delete(pd.pendingMsgs, id)
+	pd.pendingMu.Unlock()
+
+	// Ack 代表远端处理有进展；看门狗据此停止或重置计时。
+	pd.signalStateChange()
 	return true
+}
+
+func (pd *peerDelivery) signalStateChange() {
+	if pd.stateCh == nil {
+		return
+	}
+	select {
+	case pd.stateCh <- struct{}{}:
+	default:
+	}
+}
+
+func (pd *peerDelivery) requestRestart() {
+	if pd.restartCh == nil {
+		return
+	}
+	select {
+	case pd.restartCh <- struct{}{}:
+	default:
+	}
+}
+
+func (pd *peerDelivery) clearRestartRequest() {
+	if pd.restartCh == nil {
+		return
+	}
+	select {
+	case <-pd.restartCh:
+	default:
+	}
 }
 
 func (pd *peerDelivery) send(
@@ -182,12 +137,10 @@ func (pd *peerDelivery) send(
 	inv *Invalidation,
 	stream GroupCache_InvalidateClient,
 ) bool {
-	//Send方法不是并发安全的,两个goroutine同时对一个流Send会panic
 	if err := stream.Send(inv); err != nil {
-		pd.finishSend(inv.GetId(), false)
 		b.metrics.failures.Add(1)
 		slog.Warn(
-			"invalidation writer goroutine exited due to failed send ",
+			"invalidation writer goroutine exited due to failed send",
 			"component", "broadcaster",
 			"peer", addr,
 			"id", inv.GetId(),
@@ -197,8 +150,6 @@ func (pd *peerDelivery) send(
 		)
 		return false
 	}
-	//发送成功
-	pd.finishSend(inv.GetId(), true)
 	b.metrics.sent.Add(1)
 	return true
 }

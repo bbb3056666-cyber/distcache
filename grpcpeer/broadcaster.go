@@ -18,7 +18,6 @@ const (
 	sendChannelCapacity = 10
 	waitingServerTime   = 5 * time.Second
 	ackTimeout          = 3 * time.Second
-	retryScanInterval   = 1 * time.Second
 	maxPendingPerPeer   = 10_000
 )
 
@@ -65,25 +64,16 @@ func (b *Broadcaster) Connect() {
 			continue
 		}
 
-		pd := &peerDelivery{
-			sendCh:      make(chan *Invalidation, sendChannelCapacity),
-			pendingMsgs: make(map[uint64]*pendingMessage),
-		}
+		pd := newPeerDelivery(sendChannelCapacity)
 		b.mu.Lock()
 		b.deliveries[addr] = pd
 		b.mu.Unlock()
 
-		b.wg.Add(2)
+		b.wg.Add(1)
 
 		go func(addr string, pd *peerDelivery) {
 			defer b.wg.Done()
 			b.monitor(addr, pd)
-		}(addr, pd)
-
-		//消息重发协程
-		go func(addr string, pd *peerDelivery) {
-			defer b.wg.Done()
-			pd.runRetryLoop(addr, b)
 		}(addr, pd)
 	}
 }
@@ -117,7 +107,7 @@ func (b *Broadcaster) monitor(addr string, pd *peerDelivery) {
 		pd.active.Store(true)
 
 		var RWwg sync.WaitGroup
-		RWwg.Add(2)
+		RWwg.Add(3)
 
 		// writer goroutine: 只管发送
 		// 只有这一个 goroutine 会串行调用 stream.Send,避免Send并发问题
@@ -130,6 +120,12 @@ func (b *Broadcaster) monitor(addr string, pd *peerDelivery) {
 		go func() {
 			defer RWwg.Done()
 			b.runReader(addr, pd, stream, streamCancel)
+		}()
+
+		// Ack 看门狗只关注整条流是否有确认进展，不再逐条扫描 Pending。
+		go func() {
+			defer RWwg.Done()
+			b.watchAckProgress(addr, pd, streamCtx, streamCancel)
 		}()
 
 		RWwg.Wait()
@@ -208,6 +204,7 @@ func (b *Broadcaster) buildStream(
 			ok = false
 		}
 	}
+	pd.clearRestartRequest()
 
 	//流建立成功
 	slog.Info(
@@ -239,6 +236,7 @@ func (b *Broadcaster) runWriter(
 			streamCancel()
 			return
 		}
+		b.metrics.retried.Add(1)
 	}
 
 	for {
@@ -296,6 +294,83 @@ func (b *Broadcaster) runWriter(
 			return
 		}
 	}
+}
+
+// watchAckProgress 在存在未确认消息时等待 Ack 进展；超时则重建整条流并统一补发。
+func (b *Broadcaster) watchAckProgress(
+	addr string,
+	pd *peerDelivery,
+	streamCtx context.Context,
+	streamCancel context.CancelFunc,
+) {
+	b.watchAckProgressWithTimeout(addr, pd, streamCtx, streamCancel, ackTimeout)
+}
+
+func (b *Broadcaster) watchAckProgressWithTimeout(
+	addr string,
+	pd *peerDelivery,
+	streamCtx context.Context,
+	streamCancel context.CancelFunc,
+	timeout time.Duration,
+) {
+	timer := time.NewTimer(timeout)
+	armed := pd.pendingCount() > 0
+	if !armed {
+		stopTimer(timer)
+	}
+	defer stopTimer(timer)
+
+	for {
+		select {
+		case <-pd.stateCh:
+			if pd.pendingCount() == 0 {
+				stopTimer(timer)
+				armed = false
+				continue
+			}
+			resetTimer(timer, timeout)
+			armed = true
+
+		case <-pd.restartCh:
+			streamCancel()
+			return
+
+		case <-timer.C:
+			if !armed || pd.pendingCount() == 0 {
+				armed = false
+				continue
+			}
+			b.metrics.failures.Add(1)
+			slog.Warn(
+				"invalidation stream made no ack progress",
+				"component", "broadcaster",
+				"peer", addr,
+				"timeout", timeout,
+			)
+			streamCancel()
+			return
+
+		case <-streamCtx.Done():
+			return
+
+		case <-b.ctx.Done():
+			return
+		}
+	}
+}
+
+func stopTimer(timer *time.Timer) {
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+}
+
+func resetTimer(timer *time.Timer, timeout time.Duration) {
+	stopTimer(timer)
+	timer.Reset(timeout)
 }
 
 func (b *Broadcaster) runReader(
@@ -401,6 +476,7 @@ func (b *Broadcaster) Broadcast(group, key string) error {
 			if !pd.tryEnqueue(inv.GetId()) {
 				//管道满了,推迟发送
 				b.metrics.deferred.Add(1)
+				pd.requestRestart()
 				errs = append(errs, errors.New("peer sendCh full, message deferred"))
 				slog.Warn(
 					"invalidation message deferred",
